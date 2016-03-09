@@ -2,6 +2,8 @@ package ca.uwaterloo.Lab3_201_03;
 
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.util.Arrays;
+import java.util.List;
 
 import android.content.Context;
 import android.hardware.Sensor;
@@ -20,53 +22,58 @@ class AccelSensorEventListener implements SensorEventListener {
 		
 		TextView output;
 		TextView stepView;
-		TextView stateView;
 		LineGraphView graph;
 		
 		
+		private OrientationManager orientationManager;
 		private boolean recordStats = false;
 		private boolean overflow = false; 
 		
 		private stepState currentState;
-		private stepState currentStateOld;
 		
 		private FileOutputStream ZValStream;
 		private FileOutputStream YValStream;
 		private FileOutputStream TimeValStream;
+		private FileOutputStream RValStream;
 		
 		
 		private int stepCount = 0;
-		private int	stepCountOld = 0; 
-		private long stateStartTime;
 		private long timeElapsed;
+		private float initialAzimuth = 0 ;
+		private final int maxSampleCount = 5;
+		private float[] azimuthSamples = new float[maxSampleCount];
+		private boolean initialSet = false;
+		private int sampleCount = 0;
+		private int autoCount = 0;
+		
+		private float distanceN = 0;
+		private float distanceE = 0;
+		private float currentHeading = 0; // current orienation in radians
 
-		private float[] recordVals = new float[3];
 		
 		private float[] lowPassOut;
-		
-		
 		private Context context;
 
 		private String sensorString;
 		private String sensorValString;
 		private String sensorRecordValString = "x: 0 y: 0 z: 0";
+		private String displacementString = "Displacement: \n";
 
-		public AccelSensorEventListener(Context _context, TextView outputView, TextView _stepView, TextView _stateView,
-				LineGraphView _graph, FileOutputStream y,FileOutputStream  z, FileOutputStream time,boolean _recordStats )
+		public AccelSensorEventListener(Context _context, TextView outputView, TextView _stepView,LineGraphView _graph, FileOutputStream y,FileOutputStream  z, FileOutputStream time, FileOutputStream rotation,boolean _recordStats , OrientationManager orientationManager )
 		{
 			context = _context;
 			recordStats = _recordStats;
 			output = outputView;
 			stepView = _stepView;
-			stateView = _stateView;
 			graph = _graph;
 			currentState = stepState.atRest;
-			currentStateOld = stepState.atRest;
 			
 			ZValStream = y;
 			YValStream = z;
 			TimeValStream = time;
+			RValStream = rotation;
 			
+			this.orientationManager = orientationManager;
 			
 			// Change initial label to correspond to Sensor being recorded.
 			sensorString = "\nAcclerometer Reading:";
@@ -75,10 +82,8 @@ class AccelSensorEventListener implements SensorEventListener {
 		// Resets all record values to 0;
 		public void clearRecords()
 		{
-			for (int i = 0; i < recordVals.length; i++)
-			{
-				recordVals[i] = 0;
-			}
+			distanceN = 0;
+			distanceE = 0;
 		}
 
 		public void onAccuracyChanged(Sensor s, int i) {}
@@ -94,14 +99,102 @@ class AccelSensorEventListener implements SensorEventListener {
 			return out;
 		}
 		
-		// for all sensors beside Light sensor, displays the x: y: z: values associated with it
-		// and the absolute value records of each 
+		public void updateOrientation( float Rvalue)
+		{
+			// takes an initial orientation
+			// then stores the subsequent 10 samples distance from initial into an array
+			// distance is averaged, orientation becomes
+
+			if ( initialAzimuth == 0) { 
+				currentHeading =  orientationManager.getAzimuth();
+			}
+			
+			
+			if (!initialSet){
+				initialAzimuth = currentHeading;
+				initialSet = true;
+				return;
+			}
+			
+			if ( sampleCount < maxSampleCount ) {
+				azimuthSamples[sampleCount] = Rvalue - initialAzimuth; 
+				sampleCount++;
+			} else {
+				
+				/* Harmonic Mean
+				// use harmonic mean.
+				float sum = 0;
+				for (int i = 0; i < sampleCount; i++)
+				{
+					sum += 1f/azimuthSamples[i];
+				}
+
+				float avgDiff = 1f/(sum/(float)(maxSampleCount));
+				*/
+				
+				// use truncated mean
+				
+				float sum = 0;
+				float min = 0;
+				float max = 0;
+				
+				for (int i = 0; i < sampleCount; i++)
+				{
+					if (i == 0){
+						min = azimuthSamples[i];
+						max = azimuthSamples[i];
+					} else {
+						if ( azimuthSamples[i] < min)
+							min = azimuthSamples[i];
+						else if ( azimuthSamples[i] > max)
+							max = azimuthSamples[i];
+					}
+					sum += azimuthSamples[i];
+				}
+				sum -= min;
+				sum -= max;
+				float avgDiff = (sum/(float)(maxSampleCount-2));
+
+
+
+				if ( Math.abs(avgDiff) > 1) {
+					// don't smooth if user is detected to be changing drastic direction (initially)
+					currentHeading = initialAzimuth + avgDiff;
+				} else {
+					// smooth if user is heading the same relative direction
+					currentHeading += ((initialAzimuth + avgDiff)- currentHeading)/2.5f ;
+				}
+				
+				
+				// technically not  needed
+				while (currentHeading > 3.141592654) {
+					currentHeading -= 2*3.14159f ;
+				} 
+				while ( currentHeading < -3.141592654){
+					currentHeading += 2*3.14159f ;
+				}
+				sampleCount = 0;
+				initialSet  = false;
+			}
+			
+			
+		}
+		
 		
 		public void onSensorChanged(SensorEvent se) {
 			lowPassOut = lowPassFilter(se.values.clone(), lowPassOut);
 			se.values[0] = lowPassOut[0];
 			se.values[1] = lowPassOut[1];
 			se.values[2] = lowPassOut[2];
+			lowPassOut[0] = currentHeading;
+
+			if ( autoCount == 2) {
+				updateOrientation(orientationManager.getAzimuth());
+				autoCount = 0;
+			} else {
+				autoCount++;
+			}
+			
 
 			// raw data graph
 			//graph.addPoint(se.values);
@@ -113,82 +206,47 @@ class AccelSensorEventListener implements SensorEventListener {
 				try {
 					ZValStream.write(String.format("%.2f \n" ,lowPassOut[2]).getBytes());
 					YValStream.write(String.format("%.2f \n" ,lowPassOut[1]).getBytes());
+					RValStream.write(String.format("%.2f \n", currentHeading).getBytes());
 				} catch (IOException e) {
 					e.printStackTrace();
 				}
 			}
 			
 
-			// old state machine implementation, no elimation of false positives
-			switch (currentStateOld)
-			{
-				case atRest: 
-					if ( lowPassOut[2] > 0.35) {
-						currentStateOld = stepState.startStep;
-					}
-					break;
-				case startStep:
-					if ( lowPassOut[2] > 1.9f ) {
-						currentStateOld = stepState.stepPeak;
-					}
-					break;
-				case stepPeak:
-					if ( lowPassOut[2] < 1.9f) {
-						currentStateOld = stepState.stepDescent;
-					}
-					break;
-				case stepDescent:
-					if ( lowPassOut[2] < -0.95f){
-						currentStateOld = stepState.stepRebound;
-					}
-					break;
-				case stepRebound:
-					if ( lowPassOut[2] > -0.35) {
-						stepCountOld++;
-						currentStateOld = stepState.atRest;
-					}
-					break;
-			}
-
 			switch (currentState)
 			{
 				case atRest: 
+					updateOrientation(orientationManager.getAzimuth());
 					if ( (lowPassOut[2] > 0.35) && (Math.abs(lowPassOut[1]) > 0.1f)) {
 						currentState = stepState.startStep;
 						timeElapsed = System.currentTimeMillis();
 					}
-					stateView.setText("At rest");
 					break;
 				case startStep:
-
+					updateOrientation(orientationManager.getAzimuth());
 					if ( lowPassOut[2] < 0.35 )
 						currentState = stepState.atRest;
-					else if ( (lowPassOut[2] > 1.3f && lowPassOut[2] < 7) && (Math.abs(lowPassOut[1]) > 0.35f && Math.abs(lowPassOut[1]) < 2.7f )) {
+					else if ( (lowPassOut[2] > 1.4f && lowPassOut[2] < 7) && (Math.abs(lowPassOut[1]) > 0.35f && Math.abs(lowPassOut[1]) < 2.7f )) {
 						currentState = stepState.stepPeak;
 					}
-					stateView.setText("Startstep");
 					break;
 				case stepPeak:
-					if ( lowPassOut[2] > 7.6f){
+					if ( lowPassOut[2] > 10.0f){
 						overflow = true;
+					}
+					else if ( lowPassOut[2] < 1.4f) {
 						currentState = stepState.stepDescent;
 					}
-					else if ( lowPassOut[2] < 1.3f) {
-						currentState = stepState.stepDescent;
-					}
-					stateView.setText("stepPeak");
 					break;
 				case stepDescent:
-					if  ( lowPassOut[2] > 1.3f){
-						currentState = stepState.stepPeak;
+					updateOrientation(orientationManager.getAzimuth());
+					if  ( lowPassOut[2] > 1.4f){
+						currentState = stepState.atRest;
 					} else if ( lowPassOut[2] < -0.95f  && lowPassOut[1] < 0 ){
 						currentState = stepState.stepRebound;
 					}
-					stateView.setText("step descent");
 					break;
 				case stepRebound:
-					//if (checkTimeExceeds())
-					//	break;
 					if ( lowPassOut[2] > -0.35f) {
 						
 						// how much time has passed since startStep was initiated
@@ -204,38 +262,29 @@ class AccelSensorEventListener implements SensorEventListener {
 									// oh dear, something went wrong!
 								}
 							}
+							
+							double headingNS = Math.cos((double)currentHeading);
+							double headingEW = Math.sin((double)currentHeading);
+							distanceN += headingNS; 
+							distanceE += headingEW;
 						} 
 						currentState = stepState.atRest;
 						timeElapsed = 0;
 						overflow = false;
 
 					}
-					stateView.setText("stepRebound");
 					break;
 			}
 			
-			if ( Math.abs(lowPassOut[1]) > 9.1f ) {
-				currentState = stepState.atRest;
-				
-			}
-			stepView.setText(String.format("Old Step Count: %d \nNew Step Count: %d", stepCountOld, stepCount));
-		
+			stepView.setText(String.format("Step Count: %d" , stepCount));
 			sensorValString = String.format("\n x: %.2f y: %.2f z: %.2f", se.values[0], se.values[1], se.values[2]);
-			
-			
-			for (int i = 0; i < 3; i ++){
-				if (Math.abs(se.values[i]) >Math.abs(recordVals[i])) {
-					recordVals[i] = se.values[i];
-				}
-			}
-			sensorRecordValString = String.format("\nRecord: x: %.2f y: %.2f z: %.2f", recordVals[0],  recordVals[1], recordVals[2]);
+			displacementString = String.format("\nDisplacement: \n N: %.5f E: %.5f ", distanceN , distanceE );
 
-			output.setText(String.valueOf(sensorString+sensorValString + sensorRecordValString)); 
+			output.setText( displacementString  + String.valueOf(String.format("\nCurrentHeading: %f", currentHeading*(180f/3.14159f)) + sensorString+sensorValString )); 
 		}
 			
 		public void resetCounter()
 		{
 			stepCount = 0;
-			stepCountOld = 0;
 		}
 }

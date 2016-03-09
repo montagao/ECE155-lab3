@@ -140,7 +140,7 @@ public class LineGraphView extends View
 		
 		xScale = WIDTH / (points.size()+1);
 		// yScale = (HEIGHT / 2) / maxY;
-		final float maxYVal = 9.5f;
+		final float maxYVal = 3.5f;
 		yScale = (HEIGHT / 2) / maxYVal;
 
 		
